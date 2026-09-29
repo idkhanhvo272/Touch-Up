@@ -280,4 +280,17 @@
     }
 }
 
+
+- (void)postControlArrowKey:(TUCArrowKey)key {
+    // The system registers these shortcuts with the fn flag that arrow keys always carry.
+    CGEventFlags flags = kCGEventFlagMaskControl | kCGEventFlagMaskSecondaryFn;
+
+    for (int isKeyDown = 1; isKeyDown >= 0; isKeyDown--) {
+        CGEventRef event = CGEventCreateKeyboardEvent(NULL, key, isKeyDown);
+        CGEventSetFlags(event, flags);
+        CGEventPost(kCGHIDEventTap, event);
+        CFRelease(event);
+    }
+}
+
 @end

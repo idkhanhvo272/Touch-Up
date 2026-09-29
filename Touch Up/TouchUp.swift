@@ -327,7 +327,7 @@ extension TouchUp: TUCTouchDelegate {
             return isSecondaryClickEnabled ? .secondaryClick : .none
             
         case .TUCCursorGestureTwoFingerDrag:
-            return isScrollingWithOneFingerEnabled ? .drag : .scroll
+            return .scroll
             
         case .TUCCursorGesturePinch:
             return isMagnificationEnabled ? .magnify : .none

@@ -9,6 +9,13 @@
 
 NS_ASSUME_NONNULL_BEGIN
 
+typedef NS_ENUM(CGKeyCode, TUCArrowKey) {
+    TUCArrowKeyLeft  = 123,
+    TUCArrowKeyRight = 124,
+    TUCArrowKeyDown  = 125,
+    TUCArrowKeyUp    = 126,
+};
+
 @interface TUCCursorUtilities : NSObject
 
 + (instancetype)sharedInstance;
@@ -33,6 +40,9 @@ NS_ASSUME_NONNULL_BEGIN
 
 - (void)magnifyLocationA:(CGPoint)p1 locationB:(CGPoint)p2 relativeP1:(CGPoint)r1 relP2:(CGPoint)r2;
 - (void)stopMagnifying;
+
+/// Posts Control + arrow, the default shortcuts for switching Spaces, Mission Control and App Exposé.
+- (void)postControlArrowKey:(TUCArrowKey)key;
 
 
 @end
