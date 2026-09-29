@@ -68,3 +68,10 @@ fastlane/test_output
 # https://github.com/johnno1962/injectionforxcode
 
 iOSInjectionProject/
+
+# Local signing configuration and certificates must never be committed
+scripts/signing.local.env
+*.p12
+*.cer
+*.mobileprovision
+*.provisionprofile
