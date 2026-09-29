@@ -62,7 +62,7 @@ typedef NS_ENUM(NSInteger, TUCMultiFingerMode) {
 // Distances are fractions of the touch screen width rather than millimetres: panels often
 // report a bogus physical size in their EDID, which skews pixelsPerMM.
 static const CGFloat kTapSlop = 0.02;
-static const CGFloat kTwoFingerGestureThreshold = 0.015;
+static const CGFloat kTwoFingerGestureThreshold = 0.01;
 static const CGFloat kMultiFingerSwipeThreshold = 0.03;
 static const CGFloat kFourFingerPinchThreshold = 0.03;
 static const CGFloat kRightEdgeZone = 0.03;

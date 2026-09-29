@@ -71,10 +71,14 @@ static const int64_t kTUCGestureSubtypeDockSwipe   = 23;
 // Trackpads report larger gesture deltas than point deltas; this makes swiping between pages as easy as on a trackpad.
 static const CGFloat kGestureScrollScale = 1.67;
 
-// Momentum follows a real trackpad's measured deceleration: dv/dt = -k * v^p, in points per second.
-static const CGFloat kMomentumDragCoefficient = 27.6;
-static const CGFloat kMomentumDragExponent = 0.76;
-static const CGFloat kMomentumLaunchFactor = 1.15;           // trackpads launch the coast a little faster than the fingers moved
+// Content follows the fingers 1:1, unlike a trackpad that accelerates scrolling, so a trackpad's
+// deceleration coasts too short here. iOS's normal deceleration suits direct touch.
+static const CGFloat kMomentumDecayPerMS = 0.998;
+static const CGFloat kMomentumLaunchFactor = 1.3;
+// Like a trackpad's scroll acceleration, faster flicks launch disproportionately faster coasts,
+// so a short quick swipe travels far. Below this speed the launch is linear.
+static const CGFloat kMomentumBoostSpeed = 1500;
+static const CGFloat kMomentumBoostExponent = 0.5;
 static const CGFloat kMomentumStopSpeed = 100;
 static const CGFloat kMomentumMaxSpeed = 20000;
 static const NSTimeInterval kVelocityWindow = 0.06;
@@ -386,7 +390,9 @@ __attribute__((constructor)) static void TUCReadDebugFlag(void) {
     [self postScroll:CGPointZero scrollPhase:kCGScrollPhaseEnded momentumPhase:kCGMomentumScrollPhaseNone];
     
     CGPoint velocity = [self releaseVelocity];
-    velocity = CGPointMake(velocity.x * kMomentumLaunchFactor, velocity.y * kMomentumLaunchFactor);
+    CGFloat fingerSpeed = hypot(velocity.x, velocity.y);
+    CGFloat gain = kMomentumLaunchFactor * MAX(1, pow(fingerSpeed / kMomentumBoostSpeed, kMomentumBoostExponent));
+    velocity = CGPointMake(velocity.x * gain, velocity.y * gain);
     CGFloat speed = hypot(velocity.x, velocity.y);
     TUCDebugLog("scroll end samples=%lu velocity=(%.0f,%.0f)", (unsigned long)self.scrollSamples.count, velocity.x, velocity.y);
     if (!withMomentum || speed < kMomentumStopSpeed) {
@@ -404,7 +410,7 @@ __attribute__((constructor)) static void TUCReadDebugFlag(void) {
 - (void)advanceMomentumBy:(CFTimeInterval)dt {
     CGPoint velocity = self.momentumVelocity;
     CGFloat speed = hypot(velocity.x, velocity.y);
-    CGFloat newSpeed = speed - kMomentumDragCoefficient * pow(speed, kMomentumDragExponent) * dt;
+    CGFloat newSpeed = speed * pow(kMomentumDecayPerMS, dt * 1000);
     
     if (newSpeed < kMomentumStopSpeed) {
         TUCDebugLog("momentum stopped");
@@ -468,22 +474,20 @@ __attribute__((constructor)) static void TUCReadDebugFlag(void) {
 
 - (CGPoint)releaseVelocity {
     CFTimeInterval now = CACurrentMediaTime();
-    if (self.scrollSampleTimes.count < 2 || now - self.scrollSampleTimes.lastObject.doubleValue > kVelocityMaxPause) {
+    CFTimeInterval end = self.scrollSampleTimes.lastObject.doubleValue;   // the last report that moved
+    if (self.scrollSampleTimes.count == 0 || now - end > kVelocityMaxPause || self.trackTimes.count < 2) {
         return CGPointZero;
     }
     
-    // the first sample only marks when the window starts, its movement happened before
-    CGPoint sum = CGPointZero;
-    for (NSUInteger i = 1; i < self.scrollSamples.count; i++) {
-        NSPoint d = self.scrollSamples[i].pointValue;
-        sum.x += d.x;
-        sum.y += d.y;
-    }
-    CFTimeInterval span = self.scrollSampleTimes.lastObject.doubleValue - self.scrollSampleTimes.firstObject.doubleValue;
-    if (span <= 0) {
+    // Measured on the finger track, which also holds the movement that started the scroll,
+    // so short swipes with only a few reports still get their speed.
+    CFTimeInterval start = MAX(self.trackTimes.firstObject.doubleValue, end - kVelocityWindow);
+    if (end - start < 0.005) {
         return CGPointZero;
     }
-    return CGPointMake(sum.x / span, sum.y / span);
+    CGPoint p0 = [self trackPositionAtTime:start];
+    CGPoint p1 = [self trackPositionAtTime:end];
+    return CGPointMake((p1.x - p0.x) / (end - start), (p1.y - p0.y) / (end - start));
 }
 
 
