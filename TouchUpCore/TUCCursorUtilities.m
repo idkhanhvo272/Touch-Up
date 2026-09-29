@@ -49,7 +49,8 @@
 
 
 // Field numbers of undocumented CGEvent fields, as observed in real trackpad events.
-// Mac Mouse Fix (github.com/noah-nuebling/mac-mouse-fix) documents most of them.
+// The gesture synthesis in this file is derived from the MMF Source: Mac Mouse Fix by Noah Nuebling
+// (github.com/noah-nuebling/mac-mouse-fix), which documents these fields. MMF License applies to those parts.
 static const CGEventField kTUCEventTypeField        = 55;
 static const CGEventField kTUCGestureSubtypeField   = 110;
 static const CGEventField kTUCGesturePhaseField     = 132;
