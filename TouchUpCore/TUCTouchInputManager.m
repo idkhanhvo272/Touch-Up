@@ -10,40 +10,70 @@
 #import "HIDInterpreter.h"
 #import "TUCCursorUtilities.h"
 
+typedef NS_ENUM(NSInteger, TUCMultiFingerMode) {
+    TUCMultiFingerModeUndecided,
+    TUCMultiFingerModeScroll,
+    TUCMultiFingerModeTransform,   // pinch and rotate
+    TUCMultiFingerModeDockSwipe,
+    TUCMultiFingerModeDone,        // the gesture ended or fired: ignore the fingers until all of them lifted
+};
+
 @interface TUCTouchInputManager ()
 
 @property NSMutableDictionary<NSNumber *, NSNumber *> *frameIDsByLocationID;
 
 @property (weak, nullable) TUCTouch *cursorTouch;
-@property (weak, nullable) TUCTouch *gestureAdditionalTouch;
 
 @property BOOL cursorTouchQualifiedForTap; // if the cursor entered moving state once it can no longer be interpreted as tap
 @property BOOL cursorTouchDidHold; //
 @property (strong) NSDate *cursorTouchStationarySinceDate;
 
-@property CGFloat pinchDistance;
+// An interaction lasts from the first finger landing until every finger has lifted.
+@property (strong) NSDate *interactionStartDate;
+@property NSUInteger interactionMaxTouches;
+@property BOOL interactionMoved;
+@property (strong) NSMutableDictionary<NSUUID *, NSValue *> *interactionStartLocations;
 
-@property TUCCursorGesture identifiedMultitouchGesture;
+@property TUCMultiFingerMode multiFingerMode;
+@property BOOL multiFingerStarted;
+@property NSUInteger anchorTouchCount;
+@property CGPoint anchorCentroid;
+@property CGFloat anchorSpread;
+@property CGFloat anchorAngle;
+@property BOOL anchorAtRightEdge;
+@property CGPoint previousCentroid;
+@property CGFloat previousSpread;
+@property CGFloat previousAngle;
+@property CGFloat accumulatedRotation;
+@property BOOL rotationLocked;
+@property TUCDockSwipeMotion dockSwipeMotion;
 
-@property (weak, nullable) TUCTouch *twoFingerStartTouch;
-@property CGFloat twoFingerStartDistance;
-@property CGPoint twoFingerStartCentroid;
-
-@property BOOL threeFingerGestureActive;
-@property BOOL threeFingerGestureFired;
-@property NSUInteger threeFingerTouchCount;
-@property CGPoint threeFingerStartCentroid;
-
-@property BOOL ignoreTouchesUntilLift; // after a multi-finger gesture, the fingers left on the screen must not act as a cursor
+@property (strong, nullable) NSTimer *pendingSecondaryClickTimer;
+@property CGPoint pendingTwoFingerTapLocation;
+@property BOOL awaitingSecondTwoFingerTap;
 
 @end
 
 
-// Fractions of the screen width rather than millimetres: panels often report a bogus
-// physical size in their EDID, which skews pixelsPerMM.
+// Distances are fractions of the touch screen width rather than millimetres: panels often
+// report a bogus physical size in their EDID, which skews pixelsPerMM.
+static const CGFloat kTapSlop = 0.02;
 static const CGFloat kTwoFingerGestureThreshold = 0.015;
-static const CGFloat kThreeFingerSwipeThreshold = 0.06;
+static const CGFloat kMultiFingerSwipeThreshold = 0.03;
+static const CGFloat kFourFingerPinchThreshold = 0.03;
+static const CGFloat kRightEdgeZone = 0.03;
+static const CGFloat kEdgeSwipeThreshold = 0.05;
 
+static const CGFloat kRotationLockDegrees = 12;
+
+// Dock swipe progress per point of finger travel. A full screen width moves one Space, with the
+// gap the switching animation draws between Spaces; the Dock expects about 1.5 per Space.
+static const CGFloat kDockSwipeProgressPerSpace = 1.5;
+static const CGFloat kSpaceSeparatorWidth = 63;
+static const CGFloat kDockPinchTravel = 0.25;   // spread change, as a fraction of the screen width, for a full pinch
+
+static const NSTimeInterval kMultiFingerTapMaxDuration = 0.35;
+static const NSTimeInterval kTwoFingerDoubleTapInterval = 0.3;
 
 @implementation TUCTouchInputManager
 
@@ -115,9 +145,6 @@ static const CGFloat kThreeFingerSwipeThreshold = 0.06;
 - (void)stopCurrentGesture {
     [[TUCCursorUtilities sharedInstance] stopDraggingCursor];
     [[TUCCursorUtilities sharedInstance] stopMagnifying];
-
-    self.identifiedMultitouchGesture = _TUCCursorGestureNone;
-    self.twoFingerStartTouch = nil;
 }
 
 
@@ -141,9 +168,8 @@ static const CGFloat kThreeFingerSwipeThreshold = 0.06;
         self.cursorTouch = touch;
         self.cursorTouchQualifiedForTap = YES;
         self.cursorTouchDidHold = NO;
-        self.threeFingerGestureActive = NO;
-        self.ignoreTouchesUntilLift = NO;
         self.cursorTouchStationarySinceDate = nil;
+        [self beginInteraction];
     }
     
     [touch setLocation: point];
@@ -207,15 +233,16 @@ static const CGFloat kThreeFingerSwipeThreshold = 0.06;
     if(!self.cursorTouch || !self.postMouseEvents) {
         return;
     }
-
-    if ([self processThreeFingerSwipe] || self.ignoreTouchesUntilLift) {
+    
+    NSSet<TUCTouch *> *touches = [self activeTouches];
+    [self updateInteractionWithTouches:touches];
+    
+    if (self.interactionMaxTouches >= 2) {
+        [self processMultiFingerTouches:touches];
         return;
     }
-
+    
     TUCTouch *cursorTouch = self.cursorTouch;
-    
-    
-    NSArray<TUCTouch *> *touches = [[self activeTouches] allObjects];
     NSTouchPhase phase = cursorTouch.phase;
     
     
@@ -235,36 +262,23 @@ static const CGFloat kThreeFingerSwipeThreshold = 0.06;
             self.cursorTouchDidHold = YES;
         }
         
-        [self checkForSecondaryClick];
-        
         return;
     }
     
     
     else if (phase == NSTouchPhaseEnded) {
-        TUCCursorGesture endedMultitouchGesture = self.identifiedMultitouchGesture;
-
-        if (endedMultitouchGesture == _TUCCursorGestureNone ) {
-            if (self.cursorTouchDidHold) {
-                [self performMouseEventForGesture:TUCCursorGestureHoldAndDrag];
-            } else if (!self.cursorTouchQualifiedForTap) {
-                [self performMouseEventForGesture:TUCCursorGestureDrag];
-            }
+        if (self.cursorTouchDidHold) {
+            [self performMouseEventForGesture:TUCCursorGestureHoldAndDrag];
+        } else if (!self.cursorTouchQualifiedForTap) {
+            [self performMouseEventForGesture:TUCCursorGestureDrag];
         }
-
+        
         [self stopCurrentGesture];
-
+        
         if (self.cursorTouchQualifiedForTap) {
             [self performMouseEventForGesture:TUCCursorGestureTap];
-        } else if (endedMultitouchGesture == TUCCursorGestureTwoFingerDrag) {
-            // lets a two finger scroll coast like a one finger flick does
-            [self performMouseEventForGesture:TUCCursorGestureTwoFingerDrag];
         }
-
-        if (endedMultitouchGesture != _TUCCursorGestureNone) {
-            self.ignoreTouchesUntilLift = YES;
-        }
-
+        
         return;
     }
     
@@ -272,52 +286,6 @@ static const CGFloat kThreeFingerSwipeThreshold = 0.06;
     else if (phase == NSTouchPhaseCancelled) {
         [self stopCurrentGesture];
         return;
-    }
-
-    if (self.identifiedMultitouchGesture != _TUCCursorGestureNone && [touches count] < 2) {
-        // the other finger lifted first: end the gesture instead of carrying on as a one finger drag
-        [self stopCurrentGesture];
-        self.ignoreTouchesUntilLift = YES;
-        return;
-    }
-
-    if ([self checkForSecondaryClick]) {
-        return;
-    }
-    
-    if ([touches count] == 2 && [touches containsObject: cursorTouch]) {
-        // check if we need to initiate two finger drag, pinch, ...
-        if (self.identifiedMultitouchGesture == _TUCCursorGestureNone ) {
-            
-            TUCTouch *otherTouch = touches[1];
-            if (otherTouch.uuid == cursorTouch.uuid) {
-                otherTouch = touches[0];
-            }
-            
-            self.gestureAdditionalTouch = otherTouch;
-            
-            if (self.gestureAdditionalTouch.isActive) {
-                [self identifyTwoFingerGestureWithOtherTouch:otherTouch];
-
-            } else {
-                // secondary click
-                [self removeTouch:self.gestureAdditionalTouch now:YES];
-                self.gestureAdditionalTouch = nil;
-                [self performMouseEventForGesture:TUCCursorGestureTapSecondFinger];
-            }
-        }
-        
-        // other finger lifted, gesture ended
-        if (!self.gestureAdditionalTouch.isActive) {
-            [self stopCurrentGesture];
-        }
-        
-        
-        if(self.identifiedMultitouchGesture != _TUCCursorGestureNone) {
-            [self performMouseEventForGesture:self.identifiedMultitouchGesture];
-            return;
-        }
-        
     }
     
     
@@ -329,137 +297,378 @@ static const CGFloat kThreeFingerSwipeThreshold = 0.06;
 }
 
 
-/**
- Decides between pinch and two finger scroll by whichever grows first: the gap between the fingers or the distance they travel together.
- */
-- (void)identifyTwoFingerGestureWithOtherTouch:(TUCTouch *)otherTouch {
-    TUCTouch *cursorTouch = self.cursorTouch;
-    CGPoint a = [self convertScreenPointRelativeToAbsolute:cursorTouch.location locationID:cursorTouch.locationID];
-    CGPoint b = [self convertScreenPointRelativeToAbsolute:otherTouch.location locationID:otherTouch.locationID];
-    CGFloat distance = [self distanceBetweenPoint:a and:b];
-    CGPoint centroid = CGPointMake((a.x + b.x) / 2, (a.y + b.y) / 2);
+#pragma mark - Multi-Finger Gestures
 
-    if (self.twoFingerStartTouch != otherTouch) {
-        self.twoFingerStartTouch = otherTouch;
-        self.twoFingerStartDistance = distance;
-        self.twoFingerStartCentroid = centroid;
+- (void)beginInteraction {
+    if (self.pendingSecondaryClickTimer.isValid) {
+        // this might be the second tap of a two finger double tap, which zooms instead of right clicking
+        [self.pendingSecondaryClickTimer invalidate];
+        self.awaitingSecondTwoFingerTap = YES;
+    } else {
+        self.awaitingSecondTwoFingerTap = NO;
+    }
+    self.pendingSecondaryClickTimer = nil;
+    
+    self.interactionStartDate = [NSDate date];
+    self.interactionMaxTouches = 0;
+    self.interactionMoved = NO;
+    self.interactionStartLocations = [NSMutableDictionary dictionary];
+    
+    self.multiFingerMode = TUCMultiFingerModeUndecided;
+    self.multiFingerStarted = NO;
+}
+
+
+- (void)updateInteractionWithTouches:(NSSet<TUCTouch *> *)touches {
+    self.interactionMaxTouches = MAX(self.interactionMaxTouches, touches.count);
+    
+    CGFloat slop = kTapSlop * [self touchscreenWidth];
+    for (TUCTouch *touch in touches) {
+        CGPoint p = [self screenPointOfTouch:touch];
+        NSValue *start = self.interactionStartLocations[touch.uuid];
+        if (start == nil) {
+            self.interactionStartLocations[touch.uuid] = [NSValue valueWithPoint:NSPointFromCGPoint(p)];
+        } else if ([self distanceBetweenPoint:p and:NSPointToCGPoint(start.pointValue)] > slop) {
+            self.interactionMoved = YES;
+        }
+    }
+}
+
+
+- (void)processMultiFingerTouches:(NSSet<TUCTouch *> *)touches {
+    if (!self.multiFingerStarted) {
+        // a second finger joined: whatever the first finger started is over, and it is no longer a tap
+        self.multiFingerStarted = YES;
+        [self stopCurrentGesture];
+        self.cursorTouchQualifiedForTap = NO;
+        self.cursorTouchDidHold = NO;
+        [self anchorWithTouches:touches];
+    }
+    
+    if (touches.count == 0) {
+        if (self.multiFingerMode != TUCMultiFingerModeDone) {
+            TUCMultiFingerMode endedMode = self.multiFingerMode;
+            [self finishMultiFingerGesture];
+            if (endedMode == TUCMultiFingerModeUndecided) {
+                [self handleMultiFingerTap];
+            }
+        }
+        return;
+    }
+    
+    if (touches.count != self.anchorTouchCount) {
+        // a finger landed or lifted: a running gesture ends, an undecided one starts over from here
+        if (self.multiFingerMode != TUCMultiFingerModeUndecided) {
+            [self finishMultiFingerGesture];
+        }
+        [self anchorWithTouches:touches];
+        return;
+    }
+    
+    switch (self.multiFingerMode) {
+        case TUCMultiFingerModeUndecided:
+            [self identifyMultiFingerGestureWithTouches:touches];
+            break;
+        case TUCMultiFingerModeScroll:
+            [self continueScrollWithTouches:touches];
+            break;
+        case TUCMultiFingerModeTransform:
+            [self continueTransformWithTouches:touches];
+            break;
+        case TUCMultiFingerModeDockSwipe:
+            [self continueDockSwipeWithTouches:touches];
+            break;
+        case TUCMultiFingerModeDone:
+            break;
+    }
+    
+    [self rememberFrameOfTouches:touches];
+}
+
+
+- (void)identifyMultiFingerGestureWithTouches:(NSSet<TUCTouch *> *)touches {
+    if (touches.count < 2) {
+        // the other fingers lifted before anything was recognized; the last one must not start a gesture alone
         return;
     }
 
-    CGFloat spread = fabs(distance - self.twoFingerStartDistance);
-    CGFloat travel = [self distanceBetweenPoint:centroid and:self.twoFingerStartCentroid];
-    CGFloat threshold = kTwoFingerGestureThreshold * [self touchscreenForLocationID:cursorTouch.locationID].frame.size.width;
-
-    if (spread > threshold && spread > travel) {
-        self.identifiedMultitouchGesture = TUCCursorGesturePinch;
-    } else if (travel > threshold && travel > spread) {
-        self.identifiedMultitouchGesture = TUCCursorGestureTwoFingerDrag;
-    }
-}
-
-
-/**
- Three or more fingers swiping together switch Spaces (left/right), open Mission Control (up) or App Exposé (down), like on a trackpad.
- Returns YES while the swipe owns the touches, which lasts until every finger has lifted.
- */
-- (BOOL)processThreeFingerSwipe {
-    NSSet<TUCTouch *> *touches = [self activeTouches];
-
-    if (!self.threeFingerGestureActive) {
-        if (touches.count < 3) {
-            return NO;
-        }
-        [self stopCurrentGesture];
-        self.threeFingerGestureActive = YES;
-        self.threeFingerGestureFired = NO;
-        self.cursorTouchQualifiedForTap = NO;
-        self.cursorTouchDidHold = NO;
-        [self anchorThreeFingerSwipeWithTouches:touches];
-        return YES;
-    }
-
-    if (touches.count != self.threeFingerTouchCount) {
-        // a finger landed or lifted: re-anchor so the jump of the centroid does not read as a swipe
-        [self anchorThreeFingerSwipeWithTouches:touches];
-        return YES;
-    }
-
-    if (self.threeFingerGestureFired || touches.count < 3) {
-        return YES;
-    }
-
-    CGPoint centroid = [self screenCentroidOfTouches:touches];
-    CGFloat dx = centroid.x - self.threeFingerStartCentroid.x;
-    CGFloat dy = centroid.y - self.threeFingerStartCentroid.y;
-    CGFloat threshold = kThreeFingerSwipeThreshold * [self touchscreenForLocationID:self.cursorTouch.locationID].frame.size.width;
-
-    if (MAX(fabs(dx), fabs(dy)) < threshold) {
-        return YES;
-    }
-
-    self.threeFingerGestureFired = YES;
+    CGFloat width = [self touchscreenWidth];
+    CGPoint centroid = [self centroidOfTouches:touches];
+    CGFloat travel = [self distanceBetweenPoint:centroid and:self.anchorCentroid];
+    CGFloat spreadChange = [self spreadOfTouches:touches centroid:centroid] - self.anchorSpread;
     TUCCursorUtilities *utils = [TUCCursorUtilities sharedInstance];
-
-    if (fabs(dx) > fabs(dy)) {
-        // content follows the fingers like on a trackpad: swiping left reveals the Space on the right
-        [utils postControlArrowKey:dx < 0 ? TUCArrowKeyRight : TUCArrowKeyLeft];
-    } else {
-        // screen coordinates grow downwards, so a negative dy is a swipe up
-        [utils postControlArrowKey:dy < 0 ? TUCArrowKeyUp : TUCArrowKeyDown];
-    }
-
-    return YES;
-}
-
-
-- (void)anchorThreeFingerSwipeWithTouches:(NSSet<TUCTouch *> *)touches {
-    self.threeFingerTouchCount = touches.count;
-    if (touches.count > 0) {
-        self.threeFingerStartCentroid = [self screenCentroidOfTouches:touches];
-    }
-}
-
-
-- (CGPoint)screenCentroidOfTouches:(NSSet<TUCTouch *> *)touches {
-    CGPoint sum = CGPointZero;
-    for (TUCTouch *touch in touches) {
-        CGPoint p = [self convertScreenPointRelativeToAbsolute:touch.location locationID:touch.locationID];
-        sum.x += p.x;
-        sum.y += p.y;
-    }
-    return CGPointMake(sum.x / touches.count, sum.y / touches.count);
-}
-
-
-- (BOOL)checkForSecondaryClick {
-    //    if (self.identifiedMultitouchGesture != _TUCCursorGestureNone) {
-    //        return NO;
-    //    }
     
-    NSSet<TUCTouch *> *touchesInProximity = [self touchesInProximityTo:self.cursorTouch.location maxDistance:60 locationID:self.cursorTouch.locationID];
-    if (touchesInProximity.count >= 2 && self.identifiedMultitouchGesture == _TUCCursorGestureNone) {
-        
-        // TUCCursorGestureTwoFingerTap
-        NSPredicate *p1 = [NSPredicate predicateWithFormat:@"phase == %d", NSTouchPhaseEnded];
-        NSPredicate *p2 = [NSPredicate predicateWithFormat:@"phase == %d", NSTouchPhaseCancelled];
-        
-        NSPredicate *p3 = [NSPredicate predicateWithFormat:@"contactID != %d", self.cursorTouch.contactID];
-        
-        NSPredicate *p4 = [NSCompoundPredicate orPredicateWithSubpredicates:@[p1, p2]];
-        NSPredicate *p5 = [NSCompoundPredicate andPredicateWithSubpredicates:@[p3, p4]];
-        
-        NSSet<TUCTouch *> *endedTouches = [touchesInProximity filteredSetUsingPredicate:p5];
-        
-        if (endedTouches.count == 1) {
-            for (TUCTouch* touchToRemove in endedTouches) {
-                [self removeTouch:touchToRemove now:YES];
-            }
-            
-            [self performMouseEventForGesture:TUCCursorGestureTapSecondFinger];
-            return YES;
+    if (touches.count == 2) {
+        CGFloat dx = centroid.x - self.anchorCentroid.x;
+        CGFloat dy = centroid.y - self.anchorCentroid.y;
+        if (self.anchorAtRightEdge && -dx > kEdgeSwipeThreshold * width && -dx > 2 * fabs(dy)) {
+            // like swiping in from the right edge of a trackpad
+            [utils triggerSymbolicHotKey:kTUCSymbolicHotKeyNotificationCenter];
+            self.multiFingerMode = TUCMultiFingerModeDone;
+            return;
         }
+        
+        // the arc the fingers travel while turning, comparable with the distance they travel together
+        CGFloat rotation = [self angleFrom:self.anchorAngle to:[self angleOfTouches:touches]];
+        CGFloat transform = MAX(fabs(spreadChange) * 2, fabs(rotation) * self.anchorSpread);
+        CGFloat threshold = kTwoFingerGestureThreshold * width;
+        
+        if (travel > threshold && travel > transform) {
+            if ([self actionForGesture:TUCCursorGestureTwoFingerDrag] != TUCCursorActionScroll) {
+                self.multiFingerMode = TUCMultiFingerModeDone;
+                return;
+            }
+            self.multiFingerMode = TUCMultiFingerModeScroll;
+            [utils moveCursorTo:centroid];
+            [utils scrollBy:CGPointMake(dx, dy)];
+            
+        } else if (transform > threshold && transform > travel) {
+            if ([self actionForGesture:TUCCursorGesturePinch] != TUCCursorActionMagnify) {
+                self.multiFingerMode = TUCMultiFingerModeDone;
+                return;
+            }
+            self.multiFingerMode = TUCMultiFingerModeTransform;
+            self.accumulatedRotation = rotation;
+            self.rotationLocked = NO;
+            [utils moveCursorTo:centroid];
+            [utils magnifyBy:[self spreadOfTouches:touches centroid:centroid] / self.anchorSpread - 1];
+        }
+        return;
     }
-    return NO;
+    
+    if (touches.count >= 4 && fabs(spreadChange) > kFourFingerPinchThreshold * width && fabs(spreadChange) > travel) {
+        self.multiFingerMode = TUCMultiFingerModeDockSwipe;
+        self.dockSwipeMotion = TUCDockSwipeMotionPinch;
+        [utils moveCursorTo:centroid];
+        [utils dockSwipe:TUCDockSwipeMotionPinch by:[self dockSwipeDeltaForSpreadChange:spreadChange]];
+        
+    } else if (travel > kMultiFingerSwipeThreshold * width) {
+        CGFloat dx = centroid.x - self.anchorCentroid.x;
+        CGFloat dy = centroid.y - self.anchorCentroid.y;
+        TUCDockSwipeMotion motion = fabs(dx) > fabs(dy) ? TUCDockSwipeMotionHorizontal : TUCDockSwipeMotionVertical;
+        self.multiFingerMode = TUCMultiFingerModeDockSwipe;
+        self.dockSwipeMotion = motion;
+        // the cursor decides which display's Spaces or Mission Control react
+        [utils moveCursorTo:centroid];
+        [utils dockSwipe:motion by:[self dockSwipeDeltaForMotion:motion translation:CGPointMake(dx, dy)]];
+    }
+}
+
+
+- (void)continueScrollWithTouches:(NSSet<TUCTouch *> *)touches {
+    CGPoint centroid = [self centroidOfTouches:touches];
+    [[TUCCursorUtilities sharedInstance] scrollBy:CGPointMake(centroid.x - self.previousCentroid.x,
+                                                              centroid.y - self.previousCentroid.y)];
+}
+
+
+- (void)continueTransformWithTouches:(NSSet<TUCTouch *> *)touches {
+    TUCCursorUtilities *utils = [TUCCursorUtilities sharedInstance];
+    CGPoint centroid = [self centroidOfTouches:touches];
+    
+    CGFloat spread = [self spreadOfTouches:touches centroid:centroid];
+    if (self.previousSpread > 0) {
+        [utils magnifyBy:spread / self.previousSpread - 1];
+    }
+    
+    // small turns happen in every pinch; only rotate once the fingers clearly turn
+    CGFloat rotation = [self angleFrom:self.previousAngle to:[self angleOfTouches:touches]];
+    self.accumulatedRotation += rotation;
+    if (!self.rotationLocked && fabs(self.accumulatedRotation) * 180 / M_PI > kRotationLockDegrees) {
+        self.rotationLocked = YES;
+    }
+    if (self.rotationLocked) {
+        // screen coordinates grow downwards, so a positive angle turns clockwise; gestures count counterclockwise
+        [utils rotateBy:-rotation * 180 / M_PI];
+    }
+}
+
+
+- (void)continueDockSwipeWithTouches:(NSSet<TUCTouch *> *)touches {
+    TUCCursorUtilities *utils = [TUCCursorUtilities sharedInstance];
+    CGPoint centroid = [self centroidOfTouches:touches];
+    
+    if (self.dockSwipeMotion == TUCDockSwipeMotionPinch) {
+        CGFloat spreadChange = [self spreadOfTouches:touches centroid:centroid] - self.previousSpread;
+        [utils dockSwipe:TUCDockSwipeMotionPinch by:[self dockSwipeDeltaForSpreadChange:spreadChange]];
+    } else {
+        CGPoint translation = CGPointMake(centroid.x - self.previousCentroid.x, centroid.y - self.previousCentroid.y);
+        [utils dockSwipe:self.dockSwipeMotion by:[self dockSwipeDeltaForMotion:self.dockSwipeMotion translation:translation]];
+    }
+}
+
+
+- (double)dockSwipeDeltaForMotion:(TUCDockSwipeMotion)motion translation:(CGPoint)translation {
+    CGSize size = [self touchscreenSize];
+    if (motion == TUCDockSwipeMotionHorizontal) {
+        // natural direction: fingers moving right reveal the Space on the left
+        return -translation.x * kDockSwipeProgressPerSpace / (size.width + kSpaceSeparatorWidth);
+    }
+    // fingers moving up (negative y) open Mission Control
+    return translation.y / size.height;
+}
+
+
+- (double)dockSwipeDeltaForSpreadChange:(CGFloat)spreadChange {
+    return spreadChange / (kDockPinchTravel * [self touchscreenWidth]);
+}
+
+
+- (void)finishMultiFingerGesture {
+    TUCCursorUtilities *utils = [TUCCursorUtilities sharedInstance];
+    switch (self.multiFingerMode) {
+        case TUCMultiFingerModeScroll:
+            [utils endScroll];
+            break;
+        case TUCMultiFingerModeTransform:
+            [utils stopMagnifying];
+            break;
+        case TUCMultiFingerModeDockSwipe:
+            [utils endDockSwipe];
+            break;
+        case TUCMultiFingerModeUndecided:
+        case TUCMultiFingerModeDone:
+            break;
+    }
+    self.multiFingerMode = TUCMultiFingerModeDone;
+}
+
+
+- (void)handleMultiFingerTap {
+    BOOL isTap = !self.interactionMoved
+              && [[NSDate date] timeIntervalSinceDate:self.interactionStartDate] < kMultiFingerTapMaxDuration;
+    if (!isTap) {
+        return;
+    }
+    
+    CGPoint location = [self centroidOfPoints:self.interactionStartLocations.allValues];
+    TUCCursorUtilities *utils = [TUCCursorUtilities sharedInstance];
+    
+    if (self.interactionMaxTouches == 2) {
+        if (self.awaitingSecondTwoFingerTap
+            && [self distanceBetweenPoint:location and:self.pendingTwoFingerTapLocation] < kTapSlop * 3 * [self touchscreenWidth]) {
+            self.awaitingSecondTwoFingerTap = NO;
+            [utils moveCursorTo:location];
+            [utils smartMagnify];
+            return;
+        }
+        
+        // wait whether a second tap turns this into a smart zoom
+        self.pendingTwoFingerTapLocation = location;
+        if ([self actionForGesture:TUCCursorGestureTapSecondFinger] == TUCCursorActionSecondaryClick) {
+            __weak typeof(self) weakSelf = self;
+            self.pendingSecondaryClickTimer = [NSTimer scheduledTimerWithTimeInterval:kTwoFingerDoubleTapInterval repeats:NO block:^(NSTimer *timer) {
+                [utils performSecondaryClickAt:location];
+                weakSelf.pendingSecondaryClickTimer = nil;
+            }];
+        }
+        
+    } else if (self.interactionMaxTouches == 3) {
+        // a trackpad looks up with a force click or a three finger tap
+        [utils moveCursorTo:location];
+        [utils triggerSymbolicHotKey:kTUCSymbolicHotKeyLookUp];
+    }
+}
+
+
+#pragma mark - Multi-Finger Geometry
+
+- (void)anchorWithTouches:(NSSet<TUCTouch *> *)touches {
+    self.anchorTouchCount = touches.count;
+    if (touches.count == 0) {
+        return;
+    }
+    CGPoint centroid = [self centroidOfTouches:touches];
+    self.anchorCentroid = centroid;
+    self.anchorSpread = [self spreadOfTouches:touches centroid:centroid];
+    self.anchorAngle = [self angleOfTouches:touches];
+    
+    CGFloat rightmost = 0;
+    for (TUCTouch *touch in touches) {
+        rightmost = MAX(rightmost, touch.location.x);
+    }
+    self.anchorAtRightEdge = rightmost > 1 - kRightEdgeZone;
+    
+    [self rememberFrameOfTouches:touches];
+}
+
+
+- (void)rememberFrameOfTouches:(NSSet<TUCTouch *> *)touches {
+    CGPoint centroid = [self centroidOfTouches:touches];
+    self.previousCentroid = centroid;
+    self.previousSpread = [self spreadOfTouches:touches centroid:centroid];
+    self.previousAngle = [self angleOfTouches:touches];
+}
+
+
+- (CGPoint)screenPointOfTouch:(TUCTouch *)touch {
+    return [self convertScreenPointRelativeToAbsolute:touch.location locationID:touch.locationID];
+}
+
+
+- (CGPoint)centroidOfTouches:(NSSet<TUCTouch *> *)touches {
+    NSMutableArray<NSValue *> *points = [NSMutableArray arrayWithCapacity:touches.count];
+    for (TUCTouch *touch in touches) {
+        [points addObject:[NSValue valueWithPoint:NSPointFromCGPoint([self screenPointOfTouch:touch])]];
+    }
+    return [self centroidOfPoints:points];
+}
+
+
+- (CGPoint)centroidOfPoints:(NSArray<NSValue *> *)points {
+    if (points.count == 0) {
+        return CGPointZero;
+    }
+    CGPoint sum = CGPointZero;
+    for (NSValue *value in points) {
+        sum.x += value.pointValue.x;
+        sum.y += value.pointValue.y;
+    }
+    return CGPointMake(sum.x / points.count, sum.y / points.count);
+}
+
+
+/// Mean distance of the fingers from their centroid, in screen points.
+- (CGFloat)spreadOfTouches:(NSSet<TUCTouch *> *)touches centroid:(CGPoint)centroid {
+    if (touches.count == 0) {
+        return 0;
+    }
+    CGFloat sum = 0;
+    for (TUCTouch *touch in touches) {
+        sum += [self distanceBetweenPoint:[self screenPointOfTouch:touch] and:centroid];
+    }
+    return sum / touches.count;
+}
+
+
+/// Angle of the line between the first two fingers, in radians. Fingers are ordered by contact ID so the angle does not flip.
+- (CGFloat)angleOfTouches:(NSSet<TUCTouch *> *)touches {
+    if (touches.count < 2) {
+        return 0;
+    }
+    NSArray<TUCTouch *> *sorted = [touches.allObjects sortedArrayUsingSelector:@selector(compareWithAnotherTouch:)];
+    CGPoint a = [self screenPointOfTouch:sorted[0]];
+    CGPoint b = [self screenPointOfTouch:sorted[1]];
+    return atan2(b.y - a.y, b.x - a.x);
+}
+
+
+/// Shortest signed turn from one angle to another, in radians.
+- (CGFloat)angleFrom:(CGFloat)from to:(CGFloat)to {
+    CGFloat difference = to - from;
+    while (difference > M_PI) difference -= 2 * M_PI;
+    while (difference < -M_PI) difference += 2 * M_PI;
+    return difference;
+}
+
+
+- (CGSize)touchscreenSize {
+    return [self touchscreenForLocationID:self.cursorTouch.locationID].frame.size;
+}
+
+
+- (CGFloat)touchscreenWidth {
+    return [self touchscreenSize].width;
 }
 
 
@@ -467,7 +676,6 @@ static const CGFloat kThreeFingerSwipeThreshold = 0.06;
     TUCTouch *touch = self.cursorTouch;
     
     CGPoint screenLocation = [self convertScreenPointRelativeToAbsolute:touch.location locationID:touch.locationID];
-    CGPoint location2ndFinger = [self convertScreenPointRelativeToAbsolute:self.gestureAdditionalTouch.location locationID:touch.locationID];
     
     TUCCursorUtilities *utils = [TUCCursorUtilities sharedInstance];
     
@@ -520,13 +728,7 @@ static const CGFloat kThreeFingerSwipeThreshold = 0.06;
             break; }
             
         case TUCCursorActionMagnify:
-            [utils magnifyLocationA:screenLocation
-                          locationB:location2ndFinger
-                         relativeP1:self.cursorTouch.location relP2:self.gestureAdditionalTouch.location];
-            
-            if (touch.phase == NSTouchPhaseEnded || self.gestureAdditionalTouch.phase == NSTouchPhaseEnded) {
-                [utils stopMagnifying];
-            }
+            // needs two fingers, so the multi-finger recognizer drives it
             break;
     }
 }
@@ -834,7 +1036,6 @@ static const CGFloat kThreeFingerSwipeThreshold = 0.06;
         self.cursorTouchStationarySinceDate = nil;
         
         self.frameIDsByLocationID = [NSMutableDictionary new];
-        self.identifiedMultitouchGesture = _TUCCursorGestureNone;
         
         self.doubleClickTolerance = 5;
         self.holdDuration = 0.08;

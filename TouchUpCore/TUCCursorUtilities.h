@@ -9,11 +9,16 @@
 
 NS_ASSUME_NONNULL_BEGIN
 
-typedef NS_ENUM(CGKeyCode, TUCArrowKey) {
-    TUCArrowKeyLeft  = 123,
-    TUCArrowKeyRight = 124,
-    TUCArrowKeyDown  = 125,
-    TUCArrowKeyUp    = 126,
+typedef NS_ENUM(NSInteger, TUCDockSwipeMotion) {
+    TUCDockSwipeMotionHorizontal = 1, // switch Spaces
+    TUCDockSwipeMotionVertical   = 2, // Mission Control, App Exposé
+    TUCDockSwipeMotionPinch      = 3, // Launchpad, Show Desktop
+};
+
+/// IDs of the system's symbolic hot keys (System Settings › Keyboard › Keyboard Shortcuts).
+typedef NS_ENUM(int, TUCSymbolicHotKey) {
+    kTUCSymbolicHotKeyLookUp             = 70,
+    kTUCSymbolicHotKeyNotificationCenter = 163,
 };
 
 @interface TUCCursorUtilities : NSObject
@@ -38,11 +43,26 @@ typedef NS_ENUM(CGKeyCode, TUCArrowKey) {
 
 - (void)scroll:(CGPoint)translation phase:(NSTouchPhase)phase;
 
-- (void)magnifyLocationA:(CGPoint)p1 locationB:(CGPoint)p2 relativeP1:(CGPoint)r1 relP2:(CGPoint)r2;
-- (void)stopMagnifying;
+/// Trackpad-style scrolling: phased events let apps rubber-band, coast and swipe between pages.
+- (void)scrollBy:(CGPoint)delta;
+- (void)endScroll;
+- (void)cancelMomentumScroll;
 
-/// Posts Control + arrow, the default shortcuts for switching Spaces, Mission Control and App Exposé.
-- (void)postControlArrowKey:(TUCArrowKey)key;
+/// `magnification` is the relative change of the finger distance, `degrees` is counterclockwise.
+- (void)magnifyBy:(CGFloat)magnification;
+- (void)rotateBy:(CGFloat)degrees;
+- (void)stopMagnifying;
+- (void)smartMagnify;
+
+/// `delta` is in the Dock's progress units; the sign follows natural (content follows fingers) direction.
+- (void)dockSwipe:(TUCDockSwipeMotion)motion by:(double)delta;
+- (void)endDockSwipe;
+- (BOOL)isDockSwiping;
+
+- (void)postKey:(CGKeyCode)key flags:(CGEventFlags)flags;
+
+/// Triggers a system shortcut, binding an unreachable key to it first if the user left it without one.
+- (void)triggerSymbolicHotKey:(TUCSymbolicHotKey)hotKey;
 
 
 @end
