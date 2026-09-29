@@ -44,6 +44,10 @@ typedef NS_ENUM(NSInteger, TUCMultiFingerMode) {
 @property CGPoint previousCentroid;
 @property CGFloat previousSpread;
 @property CGFloat previousAngle;
+@property (strong) NSMutableDictionary<NSUUID *, NSValue *> *previousTouchLocations;
+@property CGFloat recentScrollStep;                            // typical finger movement per report during this scroll
+@property CGPoint heldScrollJump;
+@property BOOL holdingScrollJump;
 @property CGFloat accumulatedRotation;
 @property BOOL rotationLocked;
 @property TUCDockSwipeMotion dockSwipeMotion;
@@ -65,6 +69,9 @@ static const CGFloat kRightEdgeZone = 0.03;
 static const CGFloat kEdgeSwipeThreshold = 0.05;
 
 static const CGFloat kRotationLockDegrees = 12;
+
+static const CGFloat kScrollJumpFactor = 2.5;
+static const CGFloat kScrollJumpMinimum = 0.02;
 
 // Dock swipe progress per point of finger travel. A full screen width moves one Space, with the
 // gap the switching animation draws between Spaces; the Dock expects about 1.5 per Space.
@@ -88,7 +95,9 @@ static const NSTimeInterval kTwoFingerDoubleTapInterval = 0.3;
 //        [NSThread setThreadPriority:1];
     OpenHIDManager((__bridge void *)(weakSelf));
 //    }];
-    
+
+    // without these, the system silently drops every event we post
+    TUCDebugLog("permissions: postEvent=%d accessibility=%d", CGPreflightPostEventAccess(), AXIsProcessTrusted());
 }
 
 - (void)stop {
@@ -345,6 +354,9 @@ static const NSTimeInterval kTwoFingerDoubleTapInterval = 0.3;
         [self anchorWithTouches:touches];
     }
     
+    TUCDebugLog("frame n=%lu mode=%ld centroid=(%.1f,%.1f)", (unsigned long)touches.count, (long)self.multiFingerMode,
+                [self centroidOfTouches:touches].x, [self centroidOfTouches:touches].y);
+    
     if (touches.count == 0) {
         if (self.multiFingerMode != TUCMultiFingerModeDone) {
             TUCMultiFingerMode endedMode = self.multiFingerMode;
@@ -419,6 +431,8 @@ static const NSTimeInterval kTwoFingerDoubleTapInterval = 0.3;
                 return;
             }
             self.multiFingerMode = TUCMultiFingerModeScroll;
+            self.recentScrollStep = 0;
+            self.holdingScrollJump = NO;
             [utils moveCursorTo:centroid];
             [utils scrollBy:CGPointMake(dx, dy)];
             
@@ -456,9 +470,66 @@ static const NSTimeInterval kTwoFingerDoubleTapInterval = 0.3;
 
 
 - (void)continueScrollWithTouches:(NSSet<TUCTouch *> *)touches {
-    CGPoint centroid = [self centroidOfTouches:touches];
-    [[TUCCursorUtilities sharedInstance] scrollBy:CGPointMake(centroid.x - self.previousCentroid.x,
-                                                              centroid.y - self.previousCentroid.y)];
+    TUCCursorUtilities *utils = [TUCCursorUtilities sharedInstance];
+    CGPoint delta = [self steadyDeltaOfTouches:touches];
+    CGFloat step = hypot(delta.x, delta.y);
+    
+    if (self.holdingScrollJump) {
+        self.holdingScrollJump = NO;
+        if (step < 1) {
+            // Digitizers report the contacts leaping ahead, then frozen, right before they lift.
+            // Fingers cannot accelerate like that, so the leap is dropped.
+            TUCDebugLog("dropped lift jump (%.1f,%.1f)", self.heldScrollJump.x, self.heldScrollJump.y);
+        } else {
+            [utils scrollBy:self.heldScrollJump];
+        }
+    }
+    
+    if (self.recentScrollStep > 0 && step > kScrollJumpFactor * self.recentScrollStep && step > kScrollJumpMinimum * [self touchscreenWidth]) {
+        self.heldScrollJump = delta;
+        self.holdingScrollJump = YES;
+        return;
+    }
+    
+    if (step > 0) {
+        self.recentScrollStep = self.recentScrollStep > 0 ? 0.5 * self.recentScrollStep + 0.5 * step : step;
+    }
+    [utils scrollBy:delta];
+}
+
+
+/**
+ How far the fingers moved together since the last frame. A finger that starts lifting or landing jumps
+ for a frame or two; when the fingers disagree, the one that moved less is the one to trust.
+ */
+- (CGPoint)steadyDeltaOfTouches:(NSSet<TUCTouch *> *)touches {
+    NSMutableArray<NSValue *> *deltas = [NSMutableArray array];
+    for (TUCTouch *touch in touches) {
+        NSValue *previous = self.previousTouchLocations[touch.uuid];
+        if (previous == nil) {
+            continue;
+        }
+        CGPoint p = [self screenPointOfTouch:touch];
+        [deltas addObject:[NSValue valueWithPoint:NSMakePoint(p.x - previous.pointValue.x, p.y - previous.pointValue.y)]];
+    }
+    if (deltas.count == 0) {
+        return CGPointZero;
+    }
+    
+    CGPoint average = [self centroidOfPoints:deltas];
+    NSPoint smallest = deltas.firstObject.pointValue;
+    NSPoint largest = smallest;
+    for (NSValue *value in deltas) {
+        NSPoint d = value.pointValue;
+        if (hypot(d.x, d.y) < hypot(smallest.x, smallest.y)) smallest = d;
+        if (hypot(d.x, d.y) > hypot(largest.x, largest.y)) largest = d;
+    }
+    
+    CGFloat disagreement = hypot(largest.x - smallest.x, largest.y - smallest.y);
+    if (disagreement > MAX(6, hypot(smallest.x, smallest.y))) {
+        return NSPointToCGPoint(smallest);
+    }
+    return average;
 }
 
 
@@ -515,6 +586,7 @@ static const NSTimeInterval kTwoFingerDoubleTapInterval = 0.3;
 
 
 - (void)finishMultiFingerGesture {
+    TUCDebugLog("finish mode=%ld", (long)self.multiFingerMode);
     TUCCursorUtilities *utils = [TUCCursorUtilities sharedInstance];
     switch (self.multiFingerMode) {
         case TUCMultiFingerModeScroll:
@@ -598,6 +670,11 @@ static const NSTimeInterval kTwoFingerDoubleTapInterval = 0.3;
     self.previousCentroid = centroid;
     self.previousSpread = [self spreadOfTouches:touches centroid:centroid];
     self.previousAngle = [self angleOfTouches:touches];
+    
+    self.previousTouchLocations = [NSMutableDictionary dictionaryWithCapacity:touches.count];
+    for (TUCTouch *touch in touches) {
+        self.previousTouchLocations[touch.uuid] = [NSValue valueWithPoint:NSPointFromCGPoint([self screenPointOfTouch:touch])];
+    }
 }
 
 

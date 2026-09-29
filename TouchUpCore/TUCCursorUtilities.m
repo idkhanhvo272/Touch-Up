@@ -8,6 +8,7 @@
 #import "TUCCursorUtilities.h"
 
 #import <dlfcn.h>
+#import <QuartzCore/QuartzCore.h>
 
 @interface TUCCursorUtilities ()
 
@@ -17,15 +18,23 @@
 
 @property BOOL isLeftMouseDown;
 
-@property BOOL isGestureScrolling;
+@property BOOL isGestureScrolling;                             // fingers are down and scrolling
+@property BOOL scrollBeganPosted;
+@property BOOL scrollEndRequested;
+@property CGPoint trackPosition;                               // where the fingers have scrolled to so far
+@property CGPoint postedPosition;                              // how much of that has been posted
+@property (strong) NSMutableArray<NSNumber *> *trackTimes;
+@property (strong) NSMutableArray<NSValue *> *trackPositions;
 @property CGPoint scrollRemainder;
-@property (strong) NSMutableArray<NSValue *> *scrollSamples;   // CGVector (dx, dy) per sample
+@property (strong) NSMutableArray<NSValue *> *scrollSamples;
 @property (strong) NSMutableArray<NSNumber *> *scrollSampleTimes;
 
-@property (strong) NSTimer *momentumScrollTimer;
-@property CGPoint momentumVelocity;                            // points per second
-@property CFAbsoluteTime momentumLastTime;
+@property BOOL momentumActive;
 @property BOOL momentumStarted;
+@property CGPoint momentumVelocity;                            // points per second
+
+@property (strong, nullable) id frameClock;                    // CADisplayLink, or an NSTimer before macOS 14
+@property CFTimeInterval lastFrameTime;
 
 @property BOOL isMagnifying;
 @property BOOL isRotating;
@@ -62,12 +71,23 @@ static const int64_t kTUCGestureSubtypeDockSwipe   = 23;
 // Trackpads report larger gesture deltas than point deltas; this makes swiping between pages as easy as on a trackpad.
 static const CGFloat kGestureScrollScale = 1.67;
 
-static const NSTimeInterval kMomentumTickInterval = 1.0 / 120;
-static const CGFloat kMomentumDecayPerMS = 0.998;             // same feel as UIScrollView's normal deceleration
-static const CGFloat kMomentumStopSpeed = 20;                 // points per second
-static const CGFloat kMomentumMaxSpeed = 8000;
-static const NSTimeInterval kVelocityWindow = 0.1;
-static const NSTimeInterval kVelocityMaxPause = 0.05;          // a finger that rested before lifting does not fling
+// Momentum follows a real trackpad's measured deceleration: dv/dt = -k * v^p, in points per second.
+static const CGFloat kMomentumDragCoefficient = 27.6;
+static const CGFloat kMomentumDragExponent = 0.76;
+static const CGFloat kMomentumLaunchFactor = 1.15;           // trackpads launch the coast a little faster than the fingers moved
+static const CGFloat kMomentumStopSpeed = 100;
+static const CGFloat kMomentumMaxSpeed = 20000;
+static const NSTimeInterval kVelocityWindow = 0.06;
+// Frames sample the finger track this far in the past, so a digitizer report usually lies on either side to interpolate between.
+static const NSTimeInterval kResampleDelay = 0.01;
+static const NSTimeInterval kTypicalReportInterval = 0.0075;
+static const NSTimeInterval kVelocityMaxPause = 0.05;          // fingers that rested before lifting do not fling
+
+BOOL TUCDebugGestures = NO;
+
+__attribute__((constructor)) static void TUCReadDebugFlag(void) {
+    TUCDebugGestures = getenv("TOUCHUP_DEBUG_GESTURES") != NULL;
+}
 
 @implementation TUCCursorUtilities
 
@@ -82,6 +102,8 @@ static const NSTimeInterval kVelocityMaxPause = 0.05;          // a finger that 
             sharedInstance.timeOfLastClick = [NSDate dateWithTimeIntervalSince1970:0];
             sharedInstance.locationOfLastClick = CGPointZero;
             sharedInstance.scrollSamples = [NSMutableArray array];
+            sharedInstance.trackTimes = [NSMutableArray array];
+            sharedInstance.trackPositions = [NSMutableArray array];
             sharedInstance.scrollSampleTimes = [NSMutableArray array];
         }
     });
@@ -226,60 +248,172 @@ static const NSTimeInterval kVelocityMaxPause = 0.05;          // a finger that 
 
 #pragma mark - Trackpad-style Scrolling
 
+// Apps coalesce scroll events once per frame of the main display. Posting at the digitizer's own rate
+// puts one event into some frames and two into others, which judders; a trackpad sends exactly one
+// event per frame, so finger movement is collected here and posted on the display's clock.
+
 - (void)scrollBy:(CGPoint)delta {
     [self stopDraggingCursor];
     [self cancelMomentumScroll];
     
+    if (self.scrollEndRequested) {
+        // the fingers landed again before the frame that would have ended the last scroll
+        [self finishScrollWithMomentum:NO];
+    }
+    
+    CFTimeInterval now = CACurrentMediaTime();
     if (!self.isGestureScrolling) {
+        self.isGestureScrolling = YES;
+        self.scrollBeganPosted = NO;
+        self.trackPosition = CGPointZero;
+        self.postedPosition = CGPointZero;
+        self.scrollRemainder = CGPointZero;
+        [self.trackTimes removeAllObjects];
+        [self.trackPositions removeAllObjects];
         [self.scrollSamples removeAllObjects];
         [self.scrollSampleTimes removeAllObjects];
-        self.scrollRemainder = CGPointZero;
+        // the movement that started the scroll happened over the report interval before this one
+        [self appendTrackPointAt:now - kTypicalReportInterval];
     }
-    [self recordScrollSample:delta];
     
-    CGScrollPhase phase = self.isGestureScrolling ? kCGScrollPhaseChanged : kCGScrollPhaseBegan;
-    if ([self postScroll:delta scrollPhase:phase momentumPhase:kCGMomentumScrollPhaseNone]) {
-        self.isGestureScrolling = YES;
+    self.trackPosition = CGPointMake(self.trackPosition.x + delta.x, self.trackPosition.y + delta.y);
+    [self appendTrackPointAt:now];
+    [self recordScrollSample:delta];
+    [self startFrameClock];
+}
+
+
+- (void)appendTrackPointAt:(CFTimeInterval)time {
+    [self.trackTimes addObject:@(time)];
+    [self.trackPositions addObject:[NSValue valueWithPoint:NSPointFromCGPoint(self.trackPosition)]];
+    while (self.trackTimes.count > 2 && time - self.trackTimes.firstObject.doubleValue > 0.2) {
+        [self.trackTimes removeObjectAtIndex:0];
+        [self.trackPositions removeObjectAtIndex:0];
     }
 }
 
 
+/// Where the fingers had scrolled to at `time`, interpolated between digitizer reports.
+- (CGPoint)trackPositionAtTime:(CFTimeInterval)time {
+    NSUInteger count = self.trackTimes.count;
+    if (count == 0) {
+        return self.trackPosition;
+    }
+    if (time <= self.trackTimes.firstObject.doubleValue) {
+        return NSPointToCGPoint(self.trackPositions.firstObject.pointValue);
+    }
+    for (NSUInteger i = count - 1; i > 0; i--) {
+        CFTimeInterval t0 = self.trackTimes[i - 1].doubleValue;
+        CFTimeInterval t1 = self.trackTimes[i].doubleValue;
+        if (time >= t1) {
+            return NSPointToCGPoint(self.trackPositions[i].pointValue);
+        }
+        if (time >= t0) {
+            NSPoint p0 = self.trackPositions[i - 1].pointValue;
+            NSPoint p1 = self.trackPositions[i].pointValue;
+            CGFloat f = t1 > t0 ? (time - t0) / (t1 - t0) : 1;
+            return CGPointMake(p0.x + (p1.x - p0.x) * f, p0.y + (p1.y - p0.y) * f);
+        }
+    }
+    return NSPointToCGPoint(self.trackPositions.firstObject.pointValue);
+}
+
+
 - (void)endScroll {
-    if (!self.isGestureScrolling) {
+    if (self.isGestureScrolling) {
+        // the last movement is still pending; the next frame posts it, then ends the scroll
+        self.scrollEndRequested = YES;
+    }
+}
+
+
+- (void)cancelMomentumScroll {
+    if (!self.momentumActive) {
         return;
     }
+    TUCDebugLog("momentum cancelled started=%d", self.momentumStarted);
+    self.momentumActive = NO;
+    if (self.momentumStarted) {
+        [self postScroll:CGPointZero scrollPhase:0 momentumPhase:kCGMomentumScrollPhaseEnd];
+        self.momentumStarted = NO;
+    }
+}
+
+
+- (void)displayFrame:(id)sender {
+    // a display link reports the exact frame time; the current time wobbles with scheduling
+    CFTimeInterval now = CACurrentMediaTime();
+    if (@available(macOS 14.0, *)) {
+        if ([sender isKindOfClass:[CADisplayLink class]]) {
+            now = ((CADisplayLink *)sender).timestamp;
+        }
+    }
+    CFTimeInterval dt = MAX(0, MIN(now - self.lastFrameTime, 0.05));
+    self.lastFrameTime = now;
+    
+    if (self.isGestureScrolling) {
+        // once the fingers lifted, nothing more will arrive: post everything that is left
+        CGPoint target = self.scrollEndRequested ? self.trackPosition : [self trackPositionAtTime:now - kResampleDelay];
+        CGPoint delta = CGPointMake(target.x - self.postedPosition.x, target.y - self.postedPosition.y);
+        self.postedPosition = target;
+        if (delta.x != 0 || delta.y != 0) {
+            CGScrollPhase phase = self.scrollBeganPosted ? kCGScrollPhaseChanged : kCGScrollPhaseBegan;
+            if ([self postScroll:delta scrollPhase:phase momentumPhase:kCGMomentumScrollPhaseNone]) {
+                self.scrollBeganPosted = YES;
+            }
+        }
+        if (self.scrollEndRequested) {
+            [self finishScrollWithMomentum:YES];
+        }
+        return;
+    }
+    
+    if (self.momentumActive) {
+        [self advanceMomentumBy:dt];
+        return;
+    }
+    
+    [self stopFrameClock];
+}
+
+
+- (void)finishScrollWithMomentum:(BOOL)withMomentum {
     self.isGestureScrolling = NO;
+    self.scrollEndRequested = NO;
+    if (!self.scrollBeganPosted) {
+        return;
+    }
     [self postScroll:CGPointZero scrollPhase:kCGScrollPhaseEnded momentumPhase:kCGMomentumScrollPhaseNone];
     
     CGPoint velocity = [self releaseVelocity];
+    velocity = CGPointMake(velocity.x * kMomentumLaunchFactor, velocity.y * kMomentumLaunchFactor);
     CGFloat speed = hypot(velocity.x, velocity.y);
-    if (speed < kMomentumStopSpeed) {
+    TUCDebugLog("scroll end samples=%lu velocity=(%.0f,%.0f)", (unsigned long)self.scrollSamples.count, velocity.x, velocity.y);
+    if (!withMomentum || speed < kMomentumStopSpeed) {
         return;
     }
     if (speed > kMomentumMaxSpeed) {
         velocity = CGPointMake(velocity.x * kMomentumMaxSpeed / speed, velocity.y * kMomentumMaxSpeed / speed);
     }
-    
     self.momentumVelocity = velocity;
-    self.momentumLastTime = CFAbsoluteTimeGetCurrent();
+    self.momentumActive = YES;
     self.momentumStarted = NO;
-    self.momentumScrollTimer = [NSTimer scheduledTimerWithTimeInterval:kMomentumTickInterval target:self selector:@selector(updateMomentumScroll) userInfo:nil repeats:YES];
 }
 
 
-- (void)updateMomentumScroll {
-    CFAbsoluteTime now = CFAbsoluteTimeGetCurrent();
-    CFTimeInterval dt = now - self.momentumLastTime;
-    self.momentumLastTime = now;
+- (void)advanceMomentumBy:(CFTimeInterval)dt {
+    CGPoint velocity = self.momentumVelocity;
+    CGFloat speed = hypot(velocity.x, velocity.y);
+    CGFloat newSpeed = speed - kMomentumDragCoefficient * pow(speed, kMomentumDragExponent) * dt;
     
-    CGFloat decay = pow(kMomentumDecayPerMS, dt * 1000);
-    CGPoint velocity = CGPointMake(self.momentumVelocity.x * decay, self.momentumVelocity.y * decay);
-    self.momentumVelocity = velocity;
-    
-    if (hypot(velocity.x, velocity.y) < kMomentumStopSpeed) {
+    if (newSpeed < kMomentumStopSpeed) {
+        TUCDebugLog("momentum stopped");
         [self cancelMomentumScroll];
         return;
     }
+    
+    velocity = CGPointMake(velocity.x * newSpeed / speed, velocity.y * newSpeed / speed);
+    self.momentumVelocity = velocity;
     
     CGPoint delta = CGPointMake(velocity.x * dt, velocity.y * dt);
     CGMomentumScrollPhase phase = self.momentumStarted ? kCGMomentumScrollPhaseContinue : kCGMomentumScrollPhaseBegin;
@@ -289,22 +423,39 @@ static const NSTimeInterval kVelocityMaxPause = 0.05;          // a finger that 
 }
 
 
-- (void)cancelMomentumScroll {
-    if (self.momentumScrollTimer == nil) {
+- (void)startFrameClock {
+    if (self.frameClock != nil) {
         return;
     }
-    [self.momentumScrollTimer invalidate];
-    self.momentumScrollTimer = nil;
+    self.lastFrameTime = CACurrentMediaTime();
     
-    if (self.momentumStarted) {
-        [self postScroll:CGPointZero scrollPhase:0 momentumPhase:kCGMomentumScrollPhaseEnd];
-        self.momentumStarted = NO;
+    if (@available(macOS 14.0, *)) {
+        // the main display's refresh is the clock apps coalesce events on
+        NSScreen *mainScreen = NSScreen.screens.firstObject;
+        CADisplayLink *link = [mainScreen displayLinkWithTarget:self selector:@selector(displayFrame:)];
+        [link addToRunLoop:NSRunLoop.mainRunLoop forMode:NSRunLoopCommonModes];
+        self.frameClock = link;
+    } else {
+        __weak typeof(self) weakSelf = self;
+        self.frameClock = [NSTimer scheduledTimerWithTimeInterval:1.0 / 60 repeats:YES block:^(NSTimer *timer) {
+            [weakSelf displayFrame:timer];
+        }];
     }
 }
 
 
+- (void)stopFrameClock {
+    [self.frameClock invalidate];
+    self.frameClock = nil;
+}
+
+
 - (void)recordScrollSample:(CGPoint)delta {
-    CFAbsoluteTime now = CFAbsoluteTimeGetCurrent();
+    if (delta.x == 0 && delta.y == 0) {
+        // digitizers freeze the contacts for a few reports before lifting; that is no deceleration
+        return;
+    }
+    CFTimeInterval now = CACurrentMediaTime();
     [self.scrollSamples addObject:[NSValue valueWithPoint:NSPointFromCGPoint(delta)]];
     [self.scrollSampleTimes addObject:@(now)];
     
@@ -316,7 +467,7 @@ static const NSTimeInterval kVelocityMaxPause = 0.05;          // a finger that 
 
 
 - (CGPoint)releaseVelocity {
-    CFAbsoluteTime now = CFAbsoluteTimeGetCurrent();
+    CFTimeInterval now = CACurrentMediaTime();
     if (self.scrollSampleTimes.count < 2 || now - self.scrollSampleTimes.lastObject.doubleValue > kVelocityMaxPause) {
         return CGPointZero;
     }
@@ -328,7 +479,10 @@ static const NSTimeInterval kVelocityMaxPause = 0.05;          // a finger that 
         sum.x += d.x;
         sum.y += d.y;
     }
-    CFTimeInterval span = MAX(now - self.scrollSampleTimes.firstObject.doubleValue, kMomentumTickInterval);
+    CFTimeInterval span = self.scrollSampleTimes.lastObject.doubleValue - self.scrollSampleTimes.firstObject.doubleValue;
+    if (span <= 0) {
+        return CGPointZero;
+    }
     return CGPointMake(sum.x / span, sum.y / span);
 }
 

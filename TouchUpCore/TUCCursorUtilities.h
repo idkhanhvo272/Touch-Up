@@ -9,6 +9,10 @@
 
 NS_ASSUME_NONNULL_BEGIN
 
+/// Launch with TOUCHUP_DEBUG_GESTURES=1 in the environment to log gesture recognition and synthesized events to stderr.
+extern BOOL TUCDebugGestures;
+#define TUCDebugLog(...) do { if (TUCDebugGestures) { fprintf(stderr, "%.3f ", CFAbsoluteTimeGetCurrent()); fprintf(stderr, __VA_ARGS__); fputc('\n', stderr); } } while (0)
+
 typedef NS_ENUM(NSInteger, TUCDockSwipeMotion) {
     TUCDockSwipeMotionHorizontal = 1, // switch Spaces
     TUCDockSwipeMotionVertical   = 2, // Mission Control, App Exposé
