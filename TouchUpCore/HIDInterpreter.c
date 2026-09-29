@@ -11,6 +11,7 @@
 #include <mach/mach_port.h>
 #include <IOKit/IOKitLib.h>
 #include <IOKit/hid/IOHIDManager.h>
+#include <IOKit/hidsystem/IOHIDLib.h>
 
 #include <CoreGraphics/CoreGraphics.h>
 
@@ -893,6 +894,12 @@ static CFMutableDictionaryRef CreateDeviceMatchingDictionary(UInt32 inUsagePage,
 
 void OpenHIDManager(void *delegate) {
     gTouchManager = delegate;
+
+    // Reading the digitizer needs Input Monitoring; request it so macOS shows its prompt
+    // and lists the app, instead of the device open failing silently.
+    if (IOHIDCheckAccess(kIOHIDRequestTypeListenEvent) != kIOHIDAccessTypeGranted) {
+        IOHIDRequestAccess(kIOHIDRequestTypeListenEvent);
+    }
     
     
     gHidManager = IOHIDManagerCreate(kCFAllocatorDefault, kIOHIDOptionsTypeNone);
