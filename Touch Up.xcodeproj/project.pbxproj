@@ -19,6 +19,7 @@
 		7052F430298D2D280066014F /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7052F42F298D2D280066014F /* AppDelegate.swift */; };
 		7052F432298D2D280066014F /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 7052F431298D2D280066014F /* Assets.xcassets */; };
 		7052F435298D2D280066014F /* MainMenu.xib in Resources */ = {isa = PBXBuildFile; fileRef = 7052F433298D2D280066014F /* MainMenu.xib */; };
+		7C1A00000000000000000004 /* Localizable.strings in Resources */ = {isa = PBXBuildFile; fileRef = 7C1A00000000000000000003 /* Localizable.strings */; };
 		7052F444298D2DAB0066014F /* TouchUpCore.h in Headers */ = {isa = PBXBuildFile; fileRef = 7052F443298D2DAB0066014F /* TouchUpCore.h */; settings = {ATTRIBUTES = (Public, ); }; };
 		7052F447298D2DAB0066014F /* TouchUpCore.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 7052F441298D2DAB0066014F /* TouchUpCore.framework */; };
 		7052F448298D2DAB0066014F /* TouchUpCore.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 7052F441298D2DAB0066014F /* TouchUpCore.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
@@ -73,6 +74,8 @@
 		7052F42F298D2D280066014F /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
 		7052F431298D2D280066014F /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		7052F434298D2D280066014F /* Base */ = {isa = PBXFileReference; lastKnownFileType = file.xib; name = Base; path = Base.lproj/MainMenu.xib; sourceTree = "<group>"; };
+		7C1A00000000000000000001 /* vi */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = vi; path = vi.lproj/MainMenu.strings; sourceTree = "<group>"; };
+		7C1A00000000000000000002 /* vi */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = vi; path = vi.lproj/Localizable.strings; sourceTree = "<group>"; };
 		7052F436298D2D280066014F /* Touch_Up.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = Touch_Up.entitlements; sourceTree = "<group>"; };
 		7052F441298D2DAB0066014F /* TouchUpCore.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = TouchUpCore.framework; sourceTree = BUILT_PRODUCTS_DIR; };
 		7052F443298D2DAB0066014F /* TouchUpCore.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = TouchUpCore.h; sourceTree = "<group>"; };
@@ -140,6 +143,7 @@
 				7052F431298D2D280066014F /* Assets.xcassets */,
 				70FE7F8B2F858616005FF048 /* Icon.icon */,
 				7052F433298D2D280066014F /* MainMenu.xib */,
+				7C1A00000000000000000003 /* Localizable.strings */,
 				7052F436298D2D280066014F /* Touch_Up.entitlements */,
 			);
 			path = "Touch Up";
@@ -248,6 +252,7 @@
 			knownRegions = (
 				en,
 				Base,
+				vi,
 			);
 			mainGroup = 7052F423298D2D280066014F;
 			productRefGroup = 7052F42D298D2D280066014F /* Products */;
@@ -268,6 +273,7 @@
 				70FE7F8C2F858616005FF048 /* Icon.icon in Resources */,
 				7052F432298D2D280066014F /* Assets.xcassets in Resources */,
 				7052F435298D2D280066014F /* MainMenu.xib in Resources */,
+				7C1A00000000000000000004 /* Localizable.strings in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -323,8 +329,17 @@
 			isa = PBXVariantGroup;
 			children = (
 				7052F434298D2D280066014F /* Base */,
+				7C1A00000000000000000001 /* vi */,
 			);
 			name = MainMenu.xib;
+			sourceTree = "<group>";
+		};
+		7C1A00000000000000000003 /* Localizable.strings */ = {
+			isa = PBXVariantGroup;
+			children = (
+				7C1A00000000000000000002 /* vi */,
+			);
+			name = Localizable.strings;
 			sourceTree = "<group>";
 		};
 /* End PBXVariantGroup section */

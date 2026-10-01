@@ -53,7 +53,7 @@ struct SettingsView: View {
                 Text("Move Cursor").tag(1)
                 Text("Point and Click").tag(2)
             } label: {
-                SettingsExplanationLabel(labels: ("On Finger Drag", "Specify which action should occur when dragging one finger on the touch screen."))
+                SettingsExplanationLabel(labels: (String(localized: "On Finger Drag"), String(localized: "Specify which action should occur when dragging one finger on the touch screen.")))
             }
 
             
@@ -220,7 +220,7 @@ struct LegacySection<Content: View>: View {
     var body: some View {
         VStack(alignment: .leading) {
             if let title = title {
-                Text(title)
+                Text(LocalizedStringKey(title))
                     .font(.headline)
                     .padding(.horizontal, 12)
             }

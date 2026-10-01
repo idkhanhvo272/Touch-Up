@@ -120,7 +120,7 @@ class SettingsWindow: NSWindow {
                                     defer: true,
                                     screen: nil)
         
-        window.title = "Touch Up Settings"
+        window.title = String(localized: "Touch Up Settings")
         window.tabbingMode = .disallowed
         window.model = model
         window.level = .screenSaver

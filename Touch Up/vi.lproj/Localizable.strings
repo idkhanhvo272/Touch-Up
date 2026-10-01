@@ -1,0 +1,55 @@
+/* Welcome */
+"Welcome to Touch Up 🐑" = "Chào mừng đến với Touch Up 🐑";
+"Touch Up converts USB HID data from any Windows certified touchscreen to mouse events.\nInjecting mouse events requires access to accessibility APIs. You can allow this by clicking the button below." = "Touch Up chuyển dữ liệu USB HID từ mọi màn hình cảm ứng chuẩn Windows thành thao tác chuột và cử chỉ.\nĐể gửi các thao tác này, Touch Up cần quyền Trợ năng (Accessibility). Bấm nút bên dưới để cấp quyền.";
+"Grant Accessibility Access" = "Cấp quyền Trợ năng";
+
+/* Sections */
+"Touchscreens" = "Màn hình cảm ứng";
+"Gestures" = "Cử chỉ";
+"Parameters" = "Thông số";
+"Troubleshooting" = "Khắc phục sự cố";
+
+/* One finger drag */
+"On Finger Drag" = "Khi kéo một ngón";
+"Specify which action should occur when dragging one finger on the touch screen." = "Chọn việc xảy ra khi kéo một ngón tay trên màn hình cảm ứng.";
+"Scroll" = "Cuộn";
+"Move Cursor" = "Di chuyển con trỏ";
+"Point and Click" = "Trỏ và bấm";
+
+/* Settings */
+"Control Mouse with Touch" = "Điều khiển chuột bằng cảm ứng";
+"Turns the driver on or off." = "Bật hoặc tắt driver.";
+"Scroll with one finger" = "Cuộn bằng một ngón";
+"Scroll by dragging one finger over the touchscreen. If this option is disabled, you will move the cursor instead." = "Kéo một ngón trên màn hình để cuộn. Nếu tắt, kéo một ngón sẽ di chuyển con trỏ.";
+"Secondary Click" = "Click chuột phải";
+"Tap with two fingers to right-click. The click follows a moment later, because a two-finger double tap smart-zooms instead." = "Chạm bằng hai ngón để click chuột phải. Menu hiện sau một chút, vì chạm đúp hai ngón là để phóng to thông minh.";
+"Magnification" = "Thu phóng và xoay";
+"Pinch two fingers to zoom, and turn them to rotate." = "Chụm hoặc mở hai ngón để phóng to, thu nhỏ; xoay hai ngón để xoay.";
+"Bring Windows to Front" = "Đưa cửa sổ lên trước";
+"When touching a window that is not frontmost, bring it to front first. (EXPERIMENTAL)" = "Khi chạm vào cửa sổ đang nằm phía sau, đưa nó lên trước rồi mới thao tác. (THỬ NGHIỆM)";
+"Point and click" = "Trỏ và bấm";
+"Very reduced input set for exhibits: Move cursor by dragging, and click by releasing. Overrides scrolling and dragging functionality." = "Chế độ tối giản cho máy trưng bày: kéo để di chuyển con trỏ, nhấc tay để click. Thay cho chức năng cuộn và kéo thả.";
+"Hold Duration" = "Thời gian giữ";
+"How long do you have to hold finger to initiate hold&drag" = "Phải giữ ngón tay bao lâu thì mới bắt đầu giữ rồi kéo.";
+"Double Click Zone" = "Vùng click đúp";
+"How many mm can two taps be apart from each other to qualify double click" = "Hai lần chạm cách nhau tối đa bao nhiêu mm thì vẫn tính là click đúp.";
+"Ignore Origin Touches" = "Bỏ qua chạm tại gốc toạ độ";
+"If your touchscreen randomly sends coordinate (0,0) in its datastream, toggle this option to make input more stable." = "Nếu màn cảm ứng thỉnh thoảng gửi toạ độ (0,0) vô cớ, bật tuỳ chọn này để thao tác ổn định hơn.";
+"Error Resistance" = "Chống nhiễu";
+"If your touchscreen is really unreliable at reporting touches, increase this slider to make inputs more stable at the cost of higher latency in detecting liftoffs." = "Nếu màn cảm ứng báo chạm chập chờn, tăng thanh trượt này để thao tác ổn định hơn, đổi lại nhận biết nhấc tay sẽ chậm hơn.";
+"Digitizer Rotation" = "Xoay bộ cảm ứng";
+"Adds a rotation control to each touchscreen. Only needed if the digitizer orientation in does not match your screen." = "Thêm tuỳ chọn xoay cho từng màn cảm ứng. Chỉ cần khi hướng của bộ cảm ứng không khớp với màn hình.";
+
+/* Touchscreen list */
+"Upon connecting a touchscreen, it will appear here." = "Khi bạn cắm màn hình cảm ứng, nó sẽ hiện ở đây.";
+"Test" = "Thử";
+"Touch Digitizer" = "Bộ cảm ứng";
+
+/* Touch test overlay */
+"Touches" = "Điểm chạm";
+"Close overlay with " = "Đóng lớp phủ bằng ";
+"or by mouse-clicking here" = "hoặc bấm chuột vào đây";
+
+/* About */
+"Touch Up Settings" = "Cài đặt Touch Up";
+"Made with 🐑 in Aachen" = "Làm với 🐑 tại Aachen";

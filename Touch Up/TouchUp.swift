@@ -368,48 +368,48 @@ extension TouchUp {
     func uiLabels<T>(for keyPath: KeyPath<TouchUp, T>) -> (title:String, description:String) {
         switch keyPath {
         case \.isPublishingMouseEventsEnabled:
-            return("Control Mouse with Touch",
-                   "Turns the driver on or off.")
+            return(String(localized: "Control Mouse with Touch"),
+                   String(localized: "Turns the driver on or off."))
             
         case \.isScrollingWithOneFingerEnabled:
-            return("Scroll with one finger",
-                   "Scroll by dragging one finger over the touchscreen. If this option is disabled, you will move the cursor instead.")
+            return(String(localized: "Scroll with one finger"),
+                   String(localized: "Scroll by dragging one finger over the touchscreen. If this option is disabled, you will move the cursor instead."))
             
         case \.isSecondaryClickEnabled:
-            return("Secondary Click",
-                   "While your pointing finger is resting on the screen, tap another finger in proximity to it to generate a secondary click event at the location of the first finger.")
+            return(String(localized: "Secondary Click"),
+                   String(localized: "Tap with two fingers to right-click. The click follows a moment later, because a two-finger double tap smart-zooms instead."))
             
         case \.isMagnificationEnabled:
-            return("Magnification",
-                   "Pinch two fingers to increase or decrease the size of the content. (EXPERIMENTAL)")
+            return(String(localized: "Magnification"),
+                   String(localized: "Pinch two fingers to zoom, and turn them to rotate."))
             
         case \.isClickWindowToFrontEnabled:
-            return("Bring Windows to Front",
-                   "When touching a window that is not frontmost, bring it to front first. (EXPERIMENTAL)")
+            return(String(localized: "Bring Windows to Front"),
+                   String(localized: "When touching a window that is not frontmost, bring it to front first. (EXPERIMENTAL)"))
             
         case \.isClickOnLiftEnabled:
-            return("Point and click",
-                   "Very reduced input set for exhibits: Move cursor by dragging, and click by releasing. Overrides scrolling and dragging functionality.")
+            return(String(localized: "Point and click"),
+                   String(localized: "Very reduced input set for exhibits: Move cursor by dragging, and click by releasing. Overrides scrolling and dragging functionality."))
             
         case \.holdDuration:
-            return("Hold Duration",
-                   "How long do you have to hold finger to initiate hold&drag")
+            return(String(localized: "Hold Duration"),
+                   String(localized: "How long do you have to hold finger to initiate hold&drag"))
             
         case \.doubleClickDistance:
-            return("Double Click Zone",
-                   "How many mm can two taps be apart from each other to qualify double click")
+            return(String(localized: "Double Click Zone"),
+                   String(localized: "How many mm can two taps be apart from each other to qualify double click"))
             
         case \.ignoreOriginTouches:
-            return("Ignore Origin Touches",
-                   "If your touchscreen randomly sends coordinate (0,0) in its datastream, toggle this option to make input more stable.")
+            return(String(localized: "Ignore Origin Touches"),
+                   String(localized: "If your touchscreen randomly sends coordinate (0,0) in its datastream, toggle this option to make input more stable."))
             
         case \.errorResistance:
-            return("Error Resistance",
-                   "If your touchscreen is really unreliable at reporting touches, increase this slider to make inputs more stable at the cost of higher latency in detecting liftoffs.")
+            return(String(localized: "Error Resistance"),
+                   String(localized: "If your touchscreen is really unreliable at reporting touches, increase this slider to make inputs more stable at the cost of higher latency in detecting liftoffs."))
         
         case \.areAdditionalDigitizerRotationSettingsVisible:
-            return("Digitizer Rotation",
-                   "Adds a rotation control to each touchscreen. Only needed if the digitizer orientation in does not match your screen.")
+            return(String(localized: "Digitizer Rotation"),
+                   String(localized: "Adds a rotation control to each touchscreen. Only needed if the digitizer orientation in does not match your screen."))
             
         default:
             return("\(keyPath)", "")

@@ -31,7 +31,7 @@ class DebugOverlay: NSWindow {
                                     defer: true,
                                     screen: nil)
         
-        window.title = "Touches"
+        window.title = String(localized: "Touches")
         window.tabbingMode = .disallowed
         window.model = model
         

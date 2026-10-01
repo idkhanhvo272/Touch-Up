@@ -52,7 +52,7 @@ struct Digitizer: Codable, Hashable, Identifiable {
     }
     
     var deviceName: String {
-        self.name ?? "Touch Digitizer"
+        self.name ?? String(localized: "Touch Digitizer")
     }
     
     var locationIDString: String {
